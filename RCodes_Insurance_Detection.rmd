@@ -1,0 +1,378 @@
+---
+title: "737T-Project"
+output: html_document
+date: '2022-05-06'
+---
+```{r}
+# All libraries
+library(dplyr)
+library(caret)
+library(tree)
+library(gbm)
+library(xgboost)
+library(randomForest)
+```
+
+```{r}
+# Import the data
+df <- read.csv("fraud_oracle.csv")
+
+# EDA (Exploratory Data Analysis)
+# Check the basic info for data
+summary(df)
+
+str(df)
+```
+
+```{r}
+# Check the missing value
+colMeans(is.na(df))
+```
+
+```{r}
+# Reorder columns: Last column is the Target Column
+Fraud <- df$FraudFound_P
+df$FraudFound_P <- NULL
+df$FraudFound_P <- Fraud
+```
+
+```{r}
+# Check unique value for each columns
+lapply(df, unique)
+```
+
+```{r}
+df1 <- df
+# Delete the useless column: PolicyNumber, which is a unique value in the data
+df1$PolicyNumber <- NULL
+```
+
+
+```{r}
+# Check the detail of DayOfWeekClaimed = 0, MonthClaimed = 0, Age = 0
+a <- sum(df1$DayOfWeekClaimed == 0)
+b <- sum(df1$MonthClaimed == 0)
+c <- sum(df1$Age == 0)
+cat("The number of records is 0 in DayOfWeekClaimed:",a,"\n")
+cat("The number of records is 0 in MonthClaimed:",b,"\n")
+cat("The number of records is 0 in Age:",c,"\n")
+
+# Check the detail record
+df[(df1$DayOfWeekClaimed == 0),]
+df[(df1$MonthClaimed == 0),]
+
+# It is the same records, then I delete it 
+df1 <- df1[(df$DayOfWeekClaimed != 0 | df1$MonthClaimed != 0),]
+```
+
+```{r}
+# Age  = O is assign to the AgeOfPolicyHolder 16-17
+# Use mean age(16.5) of AgeOfPolicyHolder 16-17 to impute the age 0 
+df1$Age[df1$Age == 0 ]<- 16.5
+```
+
+```{r}
+# Recheck 0 value for those 3 features
+d <- sum(df1$DayOfWeekClaimed == 0)
+e <- sum(df1$MonthClaimed == 0)
+f <- sum(df1$Age == 0)
+cat("The number of records is 0 in DayOfWeekClaimed:",d,"\n")
+cat("The number of records is 0 in MonthClaimed:",e,"\n")
+cat("The number of records is 0 in Age:",f,"\n")
+```
+
+```{r}
+# Convert all character to factor 
+df1[sapply(df1, is.character)] <- lapply(df1[sapply(df1, is.character)], as.factor)
+str(df1)
+```
+
+```{r}
+# Subset selection: based on RF importance plot
+# Create df2 for subset
+df2 <- df1[,c('Fault','DayOfWeek','PolicyType','MonthClaimed','Make','RepNumber','DayOfWeekClaimed','BasePolicy')]
+df2$Month <- df1[,1]
+df2$FraudFound_P <- df1$FraudFound_P
+```
+
+```{r}
+# Data Partitioning
+set.seed(1234)
+trainIndex <- createDataPartition(df1$FraudFound_P, p =.7,
+                                  list = FALSE,
+                                  times = 1)
+
+df_train <- df1[trainIndex,]
+df_test <- df1[-trainIndex,]
+```
+
+```{r}
+# Check if there is an imbalance in the classes present in your target variable.
+count(df1, FraudFound_P)
+value <- prop.table(table(df1$FraudFound_P))
+
+x <- barplot(prop.table(table(df1$FraudFound_P)),
+        ylim = c(0, 1),
+        main = "Class Distribution")
+text(x,value, labels = round(value, digits = 2), pos = 1)
+```
+
+```{r}
+# rbind - deal with imbalance: upsample
+targetvalue <- df_train %>% filter(FraudFound_P == 1)
+n <- 15 # Change n to control upsample volume
+dfadd <- do.call("rbind", replicate(n, targetvalue, simplify = FALSE))
+df_train <- rbind(df_train, dfadd)
+```
+
+```{r}
+# Re-check imbalance issue
+count(df_train,FraudFound_P)
+value1 <- prop.table(table(df_train$FraudFound_P))
+
+x1 <- barplot(prop.table(table(df_train$FraudFound_P)),
+        ylim = c(0, 1),
+        main = "Class Distribution")
+text(x1,value1, labels = round(value1, digits = 2), pos = 1)
+```
+
+```{r}
+# Create data frame for Logistic Regression model
+df_train_lr <- df_train
+df_test_lr <- df_test
+```
+
+```{r}
+# Create data frame for Tree model
+df_train$FraudFound_P <- as.factor(df_train$FraudFound_P)
+df_test$FraudFound_P <- as.factor(df_test$FraudFound_P)
+
+df_train_tree <- df_train
+df_test_tree <- df_test
+```
+
+##Model1: Logistic Regression
+```{r}
+# Build a Logistic Regression Model
+lr <- glm(FraudFound_P~., data = df_train_lr, family = "binomial")
+summary(lr)
+
+# Logistic Regression- Performance on Test data 
+cutoff <- 0.5
+Actual_lr <- df_test_lr$FraudFound_P
+predicted_probability_lr <- predict(lr, type = "response",newdata= df_test_lr)
+Predicted_lr <- ifelse(predicted_probability_lr > cutoff, 1, 0)
+(cm_lr <- table(Actual_lr, Predicted_lr))
+
+Acc_test_lr <- (cm_lr[1,1] + cm_lr[2,2])/ sum(cm_lr)
+cat("Test Accuraccy_Logistic Regression: ", Acc_test_lr, "\n")
+spec_test <- cm_lr[1,1]/sum(cm_lr[1,]) 
+cat("Test Specificity_Logistic Regression: ", spec_test, "\n")
+sens_test <- cm_lr[2,2]/sum(cm_lr[2,]) 
+cat("Test Sensitivity_Logistic Regression: ", sens_test, "\n")
+```
+
+##Model2: Classification Tree
+```{r}
+# Classification Tree
+tree.fraud =tree(FraudFound_P~.,df_train_tree) 
+summary(tree.fraud)
+
+plot(tree.fraud)
+text(tree.fraud, pretty=0)
+
+# To predict on the test set: unpruned tree
+tree.pred=predict(tree.fraud,newdata=df_test_tree,type="class") # The confusion matrix
+(cm_tree = table(df_test_tree$FraudFound_P,tree.pred))
+
+Acc_Tree_ct = (cm_tree[1,1]+cm_tree[2,2])/sum(cm_tree)
+cat("Test Accuraccy_Tree(Unpruned): ", Acc_Tree_ct, "\n")
+spec_tree <- cm_tree[1,1]/sum(cm_tree[1,]) 
+cat("Test Specificity: ", spec_tree, "\n")
+sens_tree <- cm_tree[2,2]/sum(cm_tree[2,]) 
+cat("Test Sensitivity: ", sens_tree, "\n")
+```
+
+```{r}
+set.seed(5) 
+cv.fraud =cv.tree(tree.fraud,FUN=prune.misclass) 
+cv.fraud
+plot(cv.fraud$size,cv.fraud$dev,type="b")
+
+prune.fraud=prune.misclass(tree.fraud,best=4)
+plot(prune.fraud) 
+text(prune.fraud,pretty=0)
+
+# Predict using the pruned tree on test data
+tree.pred_prune =predict(prune.fraud, df_test_tree, type="class") 
+(CM_pruneTree = table(df_test_tree$FraudFound_P,tree.pred_prune))
+
+Acc_pruneTree = (CM_pruneTree[1,1]+CM_pruneTree[2,2])/sum(CM_pruneTree)
+cat("Test Accuraccy_PruneTree: ", Acc_pruneTree, "\n")
+spec_treecv <- CM_pruneTree[1,1]/sum(CM_pruneTree[1,]) 
+cat("Test Specificity: ", spec_treecv, "\n")
+sens_treecv <- CM_pruneTree[2,2]/sum(CM_pruneTree[2,]) 
+cat("Test Sensitivity: ", sens_treecv, "\n")
+
+# since size 5 and 4 has the same $dev, therefore the accuracy keep the same
+```
+
+##Model3: Random Forests
+```{r}
+# Random Forests
+set.seed(1)
+bag.fraud=randomForest(FraudFound_P~.,data=df_train_tree, mtry=6,importance=TRUE)
+bag.fraud
+
+yhat.bag = predict(bag.fraud,newdata=df_test_tree)
+fraud.test= df_test_tree$FraudFound_P
+
+(cm_rf = table(fraud.test,yhat.bag))
+acc_rf = (cm_rf[1,1]+cm_rf[2,2])/sum(cm_rf)
+cat("Test Accuraccy_Random Forests: ", acc_rf, "\n")
+spec_rf <- cm_rf[1,1]/sum(cm_rf[1,]) 
+cat("Test Specificity: ", spec_rf, "\n")
+sens_rf <- cm_rf[2,2]/sum(cm_rf[2,]) 
+cat("Test Sensitivity: ", sens_rf, "\n")
+```
+
+```{r}
+# Random Forests
+importance(bag.fraud)
+varImpPlot(bag.fraud)
+```
+
+##Model4: Boosting
+```{r}
+# Boosting
+set.seed(1)
+boost.fraud = gbm(FraudFound_P~.,data=df_train_lr,distribution="bernoulli",n.trees=5000,interaction.depth=5)
+summary(boost.fraud)
+
+par(mfrow=c(1,2))
+plot(boost.fraud,i="PolicyType")
+plot(boost.fraud,i="Fault")
+
+yhat.boost=predict(boost.fraud,newdata=df_test_lr,n.trees=5000,type="response")
+predicted <- ifelse(yhat.boost>=0.5,1,0)
+yhat.test= df_test_lr$FraudFound_P
+(cm_boosting = table(yhat.test,predicted))
+acc_boosting = (cm_boosting[1,1]+cm_boosting[2,2])/sum(cm_boosting)
+cat("Test Accuraccy_Boosting: ", acc_boosting, "\n")
+spec_boo <- cm_boosting[1,1]/sum(cm_boosting[1,]) 
+cat("Test Specificity : ", spec_boo, "\n")
+sens_boo <- cm_boosting[2,2]/sum(cm_boosting[2,]) 
+cat("Test Sensitivity : ", sens_boo, "\n")
+```
+
+##Model5: XGBoost
+```{r}
+# XGB
+# 'data' accepts either a numeric matrix or a single filename.
+str(df_train$FraudFound_P)
+label=df_train$FraudFound_P
+label=as.numeric(as.character(label))
+
+# select just the factor columns
+train_factor <- df_train %>%
+    select(-FraudFound_P)%>%
+    select_if(is.factor)
+dim(train_factor)
+# select just the numerical columns
+train_num <- df_train %>%
+    select_if(is.numeric)
+#get dummies 
+library('fastDummies')
+dummies_data<-dummy_cols(train_factor,remove_selected_columns = TRUE) 
+#merge numerical columns and dummies 
+train<-cbind(dummies_data,train_num)
+#matrix
+datafraud = as.matrix(train)
+#xgboost
+bst <- xgboost(data = datafraud, label = label, max.depth = 4, eta = 1, nround = 5, objective = "binary:logistic")
+#test data preparation
+#extract label
+labelT=df_test$FraudFound_P
+labelT=as.numeric(as.character(labelT))
+#transform factor to numerical
+##extract factor data
+test_factor <- df_test %>%
+    select(-FraudFound_P)%>%
+    select_if(is.factor)
+dim(test_factor)
+
+test_num <- df_test %>%
+    select_if(is.numeric)
+str(test_num)
+#get dummies 
+test_dummies<-dummy_cols(test_factor,remove_selected_columns = TRUE) 
+#merge numerical columns and dummies 
+test<-cbind(test_dummies,test_num)
+#matrix
+databeerT = as.matrix(test)
+pred <- predict(bst, databeerT)
+predicted <- ifelse(pred>0.5,1,0)
+(cm_XGB = table(labelT,predicted))
+acc_XGB = (cm_XGB[1,1]+cm_XGB[2,2])/sum(cm_XGB)
+cat("Test Accuraccy_XGB: ", acc_XGB, "\n")
+spec_test <- cm_XGB[1,1]/sum(cm_XGB[1,]) 
+cat("Test Specificity_xgboost ", spec_test, "\n")
+sens_test <- cm_XGB[2,2]/sum(cm_XGB[2,]) 
+cat("Test Sensitivity_xgboost ", sens_test, "\n")
+
+xgbImp1 <- xgb.importance(model = bst)
+xgbImp1 <- xgbImp1 %>% mutate(rank = dense_rank(desc(Gain)))
+ggplot(data=xgbImp1[which(xgbImp1$rank <= 5),], aes(x = reorder(Feature, -Gain), y = Gain)) +
+  geom_bar(stat="identity") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "XG Boosted Feature Importance (Top 5)", x = "Features", y = "Information Gain")
+```
+
+```{r}
+#lift chart in lm
+actual <- as.numeric(df_test_lr$FraudFound_P)
+df_lift <- data.frame(predicted_probability_lr,actual)
+df1S <- df_lift[order(-predicted_probability_lr),]
+
+df1S$Gains <- cumsum(df1S$actual)
+plot(df1S$Gains,type="n",main="Lift Chart:glm",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df1S$Gains)
+abline(0,sum(df1S$actual)/nrow(df1S),lty = 2, col="red")
+```
+
+```{r}
+library(pROC)
+#LM
+plot(roc(df_test_lr$FraudFound_P, predicted_probability_lr), 
+               print.auc = TRUE, col = "blue",legacy.axes=T)
+labelT=as.numeric(as.character(labelT))
+
+
+#tree
+prune.fraud
+df_test_tree$FraudFound_P_NUM <- as.numeric(df_test_tree$FraudFound_P)
+tree.pred_prune1<- as.numeric(tree.pred_prune)
+plot(roc(df_test_tree$FraudFound_P_NUM, tree.pred_prune1), 
+     print.auc = TRUE, col = "orange",print.auc.y = .4,legacy.axes=T, add = TRUE) 
+
+#rf
+df_test_tree$FraudFound_P_NUM <- as.numeric(df_test_tree$FraudFound_P)
+yhat.bag1<- as.numeric(yhat.bag)
+plot(roc(df_test_tree$FraudFound_P_NUM, yhat.bag1), 
+     print.auc = TRUE, col = "black",print.auc.y = .3,legacy.axes=T, add = TRUE) 
+
+
+#boost
+yhat.test
+plot(roc(yhat.test, yhat.boost), 
+               print.auc = TRUE, col = "green", print.auc.y = .2,legacy.axes=T, add = TRUE) 
+
+#xgboost
+plot(roc(df_test$FraudFound_P, pred), 
+               print.auc = TRUE, col = "red", print.auc.y = .1,legacy.axes=T, add = TRUE) 
+
+legend("topleft", legend=c("Logistic R","Classification Tree","Random Forest","Boost","XGBoost"), col=c("blue","orange","black","green","red"), lty=1, cex=0.8)
+title("ROC chart")
+```
+
+
